@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Widget Setup</title>
+  <style>
+    body { font-family: system-ui, Segoe UI, Arial, sans-serif; background:#111; color:#eee; max-width:680px; margin:40px auto; padding:0 20px; line-height:1.5; }
+    h1 { font-size:24px; }
+    code, textarea, input { font-family: Consolas, monospace; }
+    code { background:#222; padding:2px 6px; border-radius:4px; }
+    input[type=text] { width:100%; padding:10px; border-radius:6px; border:1px solid #444; background:#1b1b1b; color:#fff; box-sizing:border-box; }
+    textarea { width:100%; height:120px; padding:10px; border-radius:6px; border:1px solid #444; background:#1b1b1b; color:#fff; box-sizing:border-box; }
+    button { padding:10px 16px; border:0; border-radius:6px; background:#1db954; color:#000; font-weight:700; cursor:pointer; margin:8px 8px 0 0; }
+    .box { background:#1a1a1a; border:1px solid #333; border-radius:8px; padding:14px 18px; margin:16px 0; }
+    .warn { border-color:#b45309; background:#2a1c0a; }
+    .ok { border-color:#15803d; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <h1>Spotify widget setup</h1>
+
+  <div id="fileWarn" class="box warn hidden">
+    Open this page from its web address (https://...github.io/...), not by double-clicking the file.
+  </div>
+  <div id="hostWarn" class="box warn hidden">
+    Spotify rejects "localhost". Use the https web address of this page instead.
+  </div>
+
+  <div id="step1">
+    <div class="box">
+      <b>1.</b> Go to <a href="https://developer.spotify.com/dashboard" style="color:#1db954" target="_blank">developer.spotify.com/dashboard</a>,
+      create an app, and add this exact Redirect URI:<br>
+      <code id="redirect"></code>
+      <button id="copyRedirect">Copy</button><br>
+      Tick <b>Web API</b> when asked which API you'll use.
+    </div>
+    <div class="box">
+      <b>2.</b> Paste the app's <b>Client ID</b>:<br><br>
+      <input type="text" id="cid" placeholder="Client ID" autocomplete="off">
+      <button id="go">Connect Spotify</button>
+    </div>
+  </div>
+
+  <div id="result" class="hidden">
+    <div class="box ok">
+      <b>Connected.</b> Copy this URL. In OBS add a <b>Browser</b> source, paste it
+      into the <b>URL</b> box, set Width <code>560</code> and Height <code>160</code>.
+      Keep it private.
+    </div>
+    <textarea id="out" readonly></textarea><br>
+        <button id="copy">Copy</button>
+  </div>
+
+  <div id="error" class="box warn hidden"></div>
+
+<script>
+const SCOPES = "user-read-currently-playing user-read-playback-state";
+const REDIRECT = location.origin + location.pathname;
+const $ = id => document.getElementById(id);
+
+$("redirect").textContent = REDIRECT;
+if (location.protocol === "file:") $("fileWarn").classList.remove("hidden");
+if (location.hostname === "localhost" || location.hostname === "127.0.0.1") $("hostWarn").classList.remove("hidden");
+
+function rand(n) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  const a = crypto.getRandomValues(new Uint8Array(n));
+  return Array.from(a, x => chars[x % chars.length]).join("");
+}
+async function challenge(v) {
+  const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v));
+  return btoa(String.fromCharCode(...new Uint8Array(h)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fail(msg) { $("error").textContent = msg; $("error").classList.remove("hidden"); }
+
+$("copyRedirect").onclick = () => navigator.clipboard.writeText(REDIRECT);
+
+$("go").onclick = async () => {
+  const clientId = $("cid").value.trim();
+  if (!clientId) return fail("Paste your Client ID first.");
+  if (!crypto.subtle) return fail("Open this page from its https web address.");
+  const verifier = rand(64), st = rand(16);
+  localStorage.setItem("sp_setup", JSON.stringify({ clientId, verifier, st }));
+  const q = new URLSearchParams({
+    response_type: "code", client_id: clientId, scope: SCOPES,
+    redirect_uri: REDIRECT, state: st,
+    code_challenge_method: "S256", code_challenge: await challenge(verifier)
+  });
+  location.href = "https://accounts.spotify.com/authorize?" + q;
+};
+
+(async function handleReturn() {
+  const p = new URLSearchParams(location.search);
+  if (p.get("error")) return fail("Spotify returned: " + p.get("error"));
+  if (!p.get("code")) return;
+  $("step1").classList.add("hidden");
+  const saved = JSON.parse(localStorage.getItem("sp_setup") || "null");
+  if (!saved || saved.st !== p.get("state")) return fail("Session mismatch. Start again.");
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code", code: p.get("code"),
+      redirect_uri: REDIRECT, client_id: saved.clientId, code_verifier: saved.verifier
+    })
+  });
+  const d = await r.json();
+  if (!r.ok) return fail("Token exchange failed: " + JSON.stringify(d));
+  const base = location.origin + location.pathname.replace(/[^/]*$/, "");
+  const text = base + "index.html?client_id=" + encodeURIComponent(saved.clientId) +
+    "&refresh_token=" + encodeURIComponent(d.refresh_token);
+  $("out").value = text;
+  $("result").classList.remove("hidden");
+  localStorage.removeItem("sp_setup");
+  history.replaceState(null, "", location.pathname);
+  $("copy").onclick = () => navigator.clipboard.writeText(text);
+})();
+</script>
+</body>
+</html>
